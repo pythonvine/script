@@ -1,0 +1,344 @@
+AUTOMATED FAILOVER POSTGRES 
+
+Version Used: 
+
+Ubuntu 20.04.6 
+
+Postgresql 16.0 
+
+repmgr 5.3.3 
+
+Offline Installation Process: 
+
+ 
+
+ 
+
+Install Postgres & repmgr on each node: 
+
+sudo sh -c 'echo "deb http://apt.postgresql.org/pub/repos/apt $(lsb_release -cs)-pgdg main" > /etc/apt/sources.list.d/pgdg.list' 
+
+ 
+
+wget -qO- https://www.postgresql.org/media/keys/ACCC4CF8.asc | sudo tee /etc/apt/trusted.gpg.d/pgdg.asc &>/dev/null 
+
+ 
+
+sudo apt update 
+
+ 
+
+sudo apt install postgresql postgresql-client -y  
+
+ 
+
+apt install postgresql-16-repmgr 
+
+ 
+
+Primary Configuration: 
+
+Edit postgresql config file as shown below. 
+
+vi /etc/postgresql/16/main/postgresql.conf 
+
+listen_address= ‘*’ 
+
+max_wal_senders = 10 
+
+max_replication_slots = 10 
+
+wal_level = 'replica'  
+
+hot_standby = on 
+
+archive_mode = on 
+
+archive_command = '/bin/true' 
+
+shared_preload_libraries = 'repmgr' 
+
+Repeat Same Step on Other Nodes same. 
+
+ 
+
+ 
+
+ 
+
+Create user for repmgr: 
+
+su - postgres 
+
+createuser --superuser repmgr 
+
+createdb --owner=repmgr repmgr 
+
+psql -c "ALTER USER repmgr SET search_path TO repmgr, public;" 
+
+ 
+
+Configure pg_hba.conf: 
+
+Add below line to pg_hba.conf. 
+
+vi /etc/postgresql/16/main/pg_hba.conf 
+
+host       replication      repmgr        192.168.0.1/24        trust 
+
+host        repmgr           repmgr        127.0.0.1/32            trust 
+
+host        repmgr           repmgr        192.168.0.1/24       trust 
+
+host       replication      tbiam        192.168.0.1/24        trust 
+
+host        tbiam           tbiam        192.168.0.1/24         trust 
+
+systemctl restart postgresql 
+
+ 
+
+ 
+
+Configure Primary repmgr.conf: 
+
+Add below line to repmgr.conf. 
+
+vi /etc/postgresql/16/main/repmgr.conf 
+
+ 
+
+node_id=1 
+
+node_name=node1 
+
+conninfo='host=192.168.0.15 user=repmgr dbname=repmgr connect_timeout=2' 
+
+data_directory='/var/lib/postgresql/16/main/' 
+
+failover=automatic 
+
+promote_command='repmgr standby promote -f /etc/postgresql/16/main/repmgr.conf --log-to-file' 
+
+follow_command='repmgr standby follow -f /etc/postgresql/16/main/repmgr.conf --log-to-file --upstream-node-id=%n' 
+
+ 
+
+Register Primary:  
+
+su postgres 
+
+repmgr -f /etc/postgresql/16/main/repmgr.conf primary register 
+
+repmgr -f /etc/postgresql/16/main/repmgr.conf cluster show 
+
+ 
+
+Secondary Configuration: 
+
+Edit postgresql config file as shown below. 
+
+vi /etc/postgresql/16/main/postgresql.conf 
+
+listen_address= ‘*’ 
+
+shared_preload_libraries = 'repmgr' 
+
+ 
+
+Standby repmgr.conf: 
+
+Add below line to repmgr.conf. 
+
+vi /etc/postgresql/16/main/repmgr.conf 
+
+ 
+
+node_id=2 
+
+node_name=node2 
+
+conninfo='host=192.168.0.42 user=repmgr dbname=repmgr connect_timeout=2' 
+
+data_directory='/var/lib/postgresql/16/main' 
+
+failover=automatic 
+
+promote_command='repmgr standby promote -f /etc/postgresql/16/main/repmgr.conf --log-to-file' 
+
+follow_command='repmgr standby follow -f /etc/postgresql/16/main/repmgr.conf --log-to-file --upstream-node-id=%n' 
+
+ 
+
+ 
+
+ 
+
+ 
+
+ 
+
+ 
+
+Configure pg_hba.conf: 
+
+Add below line to pg_hba.conf. 
+
+vi /etc/postgresql/16/main/pg_hba.conf 
+
+host       replication      repmgr        192.168.0.1/24        trust 
+
+host        repmgr           repmgr        127.0.0.1/32            trust 
+
+host        repmgr           repmgr        192.168.0.1/24       trust 
+
+host       replication      tbiam        192.168.0.1/24        trust 
+
+host        tbiam           tbiam        192.168.0.1/24         trust 
+
+systemctl restart postgresql 
+
+ 
+
+Test Clone: 
+
+systemctl stop postgresql 
+
+su postgres  
+
+repmgr -h primary-ip -U repmgr -d repmgr -f /etc/postgresql/16/main/repmgr.conf standby clone --dry-run 
+
+Output will be like: 
+
+HINT: consider using the -c/--fast-checkpoint option  
+
+INFO: all prerequisites for "standby clone" are met 
+
+Clone: 
+
+repmgr -h primary-ip -U repmgr -d repmgr -f /etc/postgresql/16/main/repmgr.conf standby clone 
+
+Register standby: 
+
+systemctl restart postgresql 
+
+repmgr -f /etc/postgresql/16/main/repmgr.conf standby register 
+
+Start in daemon mode on every postgresql node: 
+
+repmgrd -f /etc/postgresql/16/main/repmgr.conf 
+
+Show cluster: 
+
+repmgr -f /etc/postgresql/16/main/repmgr.conf cluster show 
+
+repmgr -f /etc/postgresql/16/main/repmgr.conf cluster event 
+
+ 
+
+When Primary or any Standby node rejoins the Cluster or even showing not in sync with primary: 
+
+Follow below steps on that node: 
+
+systemctl stop postgresql  
+
+su postgres 
+
+repmgr -h primary-ip -U repmgr -d repmgr -f /etc/postgresql/16/main/repmgr.conf standby clone -F  
+
+exit 
+
+systemctl restart postgresql   
+
+su postgres 
+
+repmgr -f /etc/postgresql/16/main/repmgr.conf standby register –F 
+
+ 
+
+Automate failover  
+
+Note that all the hosts wherever clustering has been done has been resolved with their hostnames. 
+
+vi /etc/hosts 
+
+192.168.0.1 node1 
+
+192.168.0.2 node2 
+
+192.168.0.3 node3 
+
+192.168.0.4 node4 
+
+Note: If hostname is set in deffirent name, you should add below lines: 
+
+192.168.0.1 hostname1 
+
+192.168.0.2 hostname 2 
+
+192.168.0.3 hostname 3 
+
+192.168.0.4 hostname 4 
+
+ 
+
+ 
+
+ 
+
+ 
+
+ 
+
+Ensure all the hosts relate to each other using SSH-key 
+
+ssh-keygen –t rsa  
+
+ssh-copy-id  user@ip 
+
+ 
+
+Install dependencies of python  
+
+apt install python3 python3-pip 
+
+pip3 install numpy 
+
+pip3 install pandas 
+
+ 
+
+Install the al of the following scripts over the above hosts where clustering is done   
+
+Script 
+
+In the final.sh script make the following changes by adding the node names with the resolved hostnames and save the file. 
+
+ 
+
+#! /bin/bash 
+
+node1="node1" 
+
+node2="node2" 
+
+node3="node3" 
+
+node4="node4" 
+
+Before running cron generate a failover and run the script final.sh from your device manually. 
+
+And ensure the postgres endpoints are running in daemon mode. 
+
+ 
+
+Setup crontab to run the final.sh script every 1 min on all Nodes  
+
+crontab –e 
+ 
+
+Edit the path to script where the script is located like below  
+
+*/1 * * * * ~/final.sh >> /home/test/failover.log 2>&1 
+
+ 
